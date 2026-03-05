@@ -4,14 +4,16 @@
 //! via Handlebars as an Extism WASM guest plugin.
 
 pub mod host_bridge;
+mod creation;
+mod render;
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
-use diaryx_templating::creation::{self, Template, TemplateContext, TemplateInfo};
-use diaryx_templating::render::{self, BodyTemplateRenderer};
+use crate::creation::{Template, TemplateContext, TemplateInfo};
+use crate::render::BodyTemplateRenderer;
 use extism_pdk::*;
 use indexmap::IndexMap;
 use serde_json::Value as JsonValue;
