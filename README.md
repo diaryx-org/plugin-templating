@@ -28,6 +28,24 @@ ui:
   - slot: BlockPickerItem
     id: templating-for-audience
     label: "For Audience"
+requested_permissions:
+  defaults:
+    read_files:
+      include: ["all"]
+    edit_files:
+      include: ["all"]
+    create_files:
+      include: ["all"]
+    delete_files:
+      include: ["all"]
+    plugin_storage:
+      include: ["all"]
+  reasons:
+    read_files: "Read workspace templates from the _templates directory."
+    edit_files: "Update existing workspace templates when saving changes."
+    create_files: "Create new workspace templates in the _templates directory."
+    delete_files: "Remove workspace templates that are no longer needed."
+    plugin_storage: "Persist templating plugin configuration for the current workspace."
 ---
 
 # diaryx_templating_extism

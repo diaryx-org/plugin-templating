@@ -3,8 +3,8 @@
 //! Provides creation-time template CRUD and render-time body templating
 //! via Handlebars as an Extism WASM guest plugin.
 
-pub mod host_bridge;
 mod creation;
+pub mod host_bridge;
 mod render;
 
 use std::collections::hash_map::DefaultHasher;
@@ -14,6 +14,7 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::creation::{Template, TemplateContext, TemplateInfo};
 use crate::render::BodyTemplateRenderer;
+use chrono::{DateTime, FixedOffset};
 use extism_pdk::*;
 use indexmap::IndexMap;
 use serde_json::Value as JsonValue;
@@ -30,6 +31,8 @@ struct GuestManifest {
     version: String,
     description: String,
     capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    requested_permissions: Option<JsonValue>,
     #[serde(default)]
     ui: Vec<JsonValue>,
     #[serde(default)]
@@ -117,6 +120,12 @@ fn update_workspace_root(workspace_root: Option<String>) -> Result<(), String> {
     guard.workspace_root = workspace_root.clone();
     guard.config = load_workspace_config(workspace_root.as_deref());
     Ok(())
+}
+
+fn current_local_datetime() -> Result<DateTime<FixedOffset>, String> {
+    let raw = host_bridge::get_now()?;
+    DateTime::parse_from_rfc3339(&raw)
+        .map_err(|e| format!("failed to parse host_get_now response: {e}"))
 }
 
 // ============================================================================
@@ -334,7 +343,8 @@ fn dispatch_command(command: &str, params: JsonValue) -> Result<JsonValue, Strin
                 ctx = ctx.with_filename(f);
             }
 
-            let rendered = template.render(&ctx);
+            let now = current_local_datetime()?;
+            let rendered = template.render(&ctx, &now);
             Ok(JsonValue::String(rendered))
         }
         "get_component_html" => {
@@ -407,6 +417,22 @@ pub fn manifest(_input: String) -> FnResult<String> {
         description: "Creation-time templates and render-time body templating with Handlebars"
             .into(),
         capabilities: vec!["workspace_events".into(), "custom_commands".into()],
+        requested_permissions: Some(serde_json::json!({
+            "defaults": {
+                "read_files": { "include": ["all"], "exclude": [] },
+                "edit_files": { "include": ["all"], "exclude": [] },
+                "create_files": { "include": ["all"], "exclude": [] },
+                "delete_files": { "include": ["all"], "exclude": [] },
+                "plugin_storage": { "include": ["all"], "exclude": [] }
+            },
+            "reasons": {
+                "read_files": "Read workspace templates from the _templates directory.",
+                "edit_files": "Update existing workspace templates when saving changes.",
+                "create_files": "Create new workspace templates in the _templates directory.",
+                "delete_files": "Remove workspace templates that are no longer needed.",
+                "plugin_storage": "Persist templating plugin configuration for the current workspace."
+            }
+        })),
         ui: vec![
             serde_json::json!({
                 "slot": "SettingsTab",

@@ -12,6 +12,7 @@ extern "ExtismHost" {
     pub fn host_delete_file(input: String) -> String;
     pub fn host_storage_get(input: String) -> String;
     pub fn host_storage_set(input: String) -> String;
+    pub fn host_get_now(input: String) -> String;
 }
 
 use base64::Engine;
@@ -95,4 +96,8 @@ pub fn storage_set(key: &str, data: &[u8]) -> Result<(), String> {
     let input = serde_json::json!({ "key": key, "data": encoded }).to_string();
     unsafe { host_storage_set(input) }.map_err(|e| format!("host_storage_set failed: {e}"))?;
     Ok(())
+}
+
+pub fn get_now() -> Result<String, String> {
+    unsafe { host_get_now(String::new()) }.map_err(|e| format!("host_get_now failed: {e}"))
 }

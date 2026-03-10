@@ -7,7 +7,7 @@
 //! created. For **render-time** body templating (Handlebars `{{#each}}`, `{{#if}}`,
 //! custom helpers) that runs on every view/publish, see [`render`](crate::render).
 
-use chrono::{Local, NaiveDate};
+use chrono::{DateTime, FixedOffset, NaiveDate};
 use indexmap::IndexMap;
 use serde_yaml::Value;
 
@@ -72,16 +72,17 @@ impl Template {
     }
 
     /// Render the template with the given context.
-    pub fn render(&self, context: &TemplateContext) -> String {
-        substitute_variables(&self.raw_content, context)
+    pub fn render(&self, context: &TemplateContext, now: &DateTime<FixedOffset>) -> String {
+        substitute_variables(&self.raw_content, context, now)
     }
 
     /// Render and parse into frontmatter and body.
     pub fn render_parsed(
         &self,
         context: &TemplateContext,
+        now: &DateTime<FixedOffset>,
     ) -> Result<(IndexMap<String, Value>, String), String> {
-        let rendered = self.render(context);
+        let rendered = self.render(context, now);
         parse_rendered_template(&rendered)
     }
 }
@@ -138,8 +139,8 @@ impl TemplateContext {
     }
 
     /// Get the effective date (provided or today).
-    pub fn effective_date(&self) -> NaiveDate {
-        self.date.unwrap_or_else(|| Local::now().date_naive())
+    pub fn effective_date(&self, now: &DateTime<FixedOffset>) -> NaiveDate {
+        self.date.unwrap_or_else(|| now.date_naive())
     }
 
     /// Get the effective title (provided, filename, or "Untitled").
@@ -152,10 +153,13 @@ impl TemplateContext {
 }
 
 /// Substitute template variables in a string.
-pub fn substitute_variables(content: &str, context: &TemplateContext) -> String {
+pub fn substitute_variables(
+    content: &str,
+    context: &TemplateContext,
+    now: &DateTime<FixedOffset>,
+) -> String {
     let mut result = content.to_string();
-    let now = Local::now();
-    let date = context.effective_date();
+    let date = context.effective_date(now);
 
     // Process variables with format specifiers first (e.g., {{date:%Y-%m-%d}})
     result = substitute_formatted_variables(&result, "date", |fmt| date.format(fmt).to_string());
@@ -260,7 +264,7 @@ mod tests {
     fn test_simple_variable_substitution() {
         let template = Template::new("test", "Hello {{title}}!");
         let context = TemplateContext::new().with_title("World");
-        let result = template.render(&context);
+        let result = template.render(&context, &sample_now());
         assert_eq!(result, "Hello World!");
     }
 
@@ -269,7 +273,7 @@ mod tests {
         let template = Template::new("test", "Date: {{date}}, Year: {{year}}, Month: {{month}}");
         let date = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
         let context = TemplateContext::new().with_date(date);
-        let result = template.render(&context);
+        let result = template.render(&context, &sample_now());
         assert_eq!(result, "Date: 2024-06-15, Year: 2024, Month: 06");
     }
 
@@ -278,7 +282,7 @@ mod tests {
         let template = Template::new("test", "{{date:%B %d, %Y}}");
         let date = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
         let context = TemplateContext::new().with_date(date);
-        let result = template.render(&context);
+        let result = template.render(&context, &sample_now());
         assert_eq!(result, "June 15, 2024");
     }
 
@@ -288,7 +292,7 @@ mod tests {
         let context = TemplateContext::new()
             .with_custom("mood", "happy")
             .with_custom("weather", "sunny");
-        let result = template.render(&context);
+        let result = template.render(&context, &sample_now());
         assert_eq!(result, "Mood: happy, Weather: sunny");
     }
 
@@ -296,7 +300,7 @@ mod tests {
     fn test_builtin_note_template() {
         let template = Template::builtin_note();
         let context = TemplateContext::new().with_title("My Note");
-        let result = template.render(&context);
+        let result = template.render(&context, &sample_now());
 
         assert!(result.contains("title: \"My Note\""));
         assert!(result.contains("# My Note"));
@@ -307,7 +311,7 @@ mod tests {
     fn test_render_parsed() {
         let template = Template::new("test", "---\ntitle: \"{{title}}\"\n---\n\n# {{title}}\n");
         let context = TemplateContext::new().with_title("Test");
-        let (frontmatter, body) = template.render_parsed(&context).unwrap();
+        let (frontmatter, body) = template.render_parsed(&context, &sample_now()).unwrap();
 
         assert_eq!(frontmatter.get("title").unwrap().as_str().unwrap(), "Test");
         assert_eq!(body.trim(), "# Test");
@@ -332,7 +336,7 @@ mod tests {
     fn test_part_of_empty_when_not_set() {
         let template = Template::new("test", "part_of: {{part_of}}");
         let context = TemplateContext::new();
-        let result = template.render(&context);
+        let result = template.render(&context, &sample_now());
         assert_eq!(result, "part_of: ");
     }
 
@@ -340,12 +344,21 @@ mod tests {
     fn test_timestamp_format() {
         let template = Template::new("test", "{{timestamp}}");
         let context = TemplateContext::new();
-        let result = template.render(&context);
+        let result = template.render(&context, &sample_now());
 
-        // Should match ISO 8601 with timezone like "2024-06-15T10:30:00-07:00"
-        assert!(result.contains("T"));
-        assert!(result.contains(":"));
-        // Should have timezone offset
-        assert!(result.contains("+") || result.contains("-"));
+        assert_eq!(result, "2024-06-15T10:30:45-07:00");
+    }
+
+    #[test]
+    fn test_effective_date_defaults_to_host_now() {
+        let template = Template::new("test", "{{date}}");
+        let context = TemplateContext::new();
+        let result = template.render(&context, &sample_now());
+
+        assert_eq!(result, "2024-06-15");
+    }
+
+    fn sample_now() -> DateTime<FixedOffset> {
+        DateTime::parse_from_rfc3339("2024-06-15T10:30:45-07:00").unwrap()
     }
 }
