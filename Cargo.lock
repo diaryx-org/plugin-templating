@@ -143,11 +143,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "diaryx_plugin_sdk"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "extism-pdk",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "diaryx_templating_extism"
 version = "0.1.0"
 dependencies = [
  "base64",
  "chrono",
+ "diaryx_plugin_sdk",
  "extism-pdk",
  "handlebars",
  "indexmap",

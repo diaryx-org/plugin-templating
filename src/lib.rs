@@ -4,10 +4,10 @@
 //! via Handlebars as an Extism WASM guest plugin.
 
 mod creation;
-pub mod host_bridge;
 mod render;
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
@@ -15,46 +15,11 @@ use std::sync::{Mutex, OnceLock};
 use crate::creation::{Template, TemplateContext, TemplateInfo};
 use crate::render::BodyTemplateRenderer;
 use chrono::{DateTime, FixedOffset};
+use diaryx_plugin_sdk::prelude::*;
 use extism_pdk::*;
 use indexmap::IndexMap;
 use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
-
-// ============================================================================
-// Guest manifest / protocol types
-// ============================================================================
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct GuestManifest {
-    id: String,
-    name: String,
-    version: String,
-    description: String,
-    capabilities: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    requested_permissions: Option<JsonValue>,
-    #[serde(default)]
-    ui: Vec<JsonValue>,
-    #[serde(default)]
-    commands: Vec<String>,
-    #[serde(default)]
-    cli: Vec<JsonValue>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct CommandRequest {
-    command: String,
-    params: JsonValue,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct CommandResponse {
-    success: bool,
-    #[serde(default)]
-    data: Option<JsonValue>,
-    #[serde(default)]
-    error: Option<String>,
-}
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct InitParams {
@@ -101,7 +66,7 @@ fn storage_key_for_workspace(workspace_root: Option<&str>) -> String {
 
 fn load_workspace_config(workspace_root: Option<&str>) -> TemplatingConfig {
     let key = storage_key_for_workspace(workspace_root);
-    match host_bridge::storage_get(&key) {
+    match host::storage::get(&key) {
         Ok(Some(data)) => serde_json::from_slice(&data).unwrap_or_default(),
         _ => TemplatingConfig::default(),
     }
@@ -110,7 +75,7 @@ fn load_workspace_config(workspace_root: Option<&str>) -> TemplatingConfig {
 fn save_workspace_config(state: &TemplatingState) -> Result<(), String> {
     let key = storage_key_for_workspace(state.workspace_root.as_deref());
     let data = serde_json::to_vec(&state.config).map_err(|e| format!("serialize config: {e}"))?;
-    host_bridge::storage_set(&key, &data)
+    host::storage::set(&key, &data)
 }
 
 fn update_workspace_root(workspace_root: Option<String>) -> Result<(), String> {
@@ -123,7 +88,7 @@ fn update_workspace_root(workspace_root: Option<String>) -> Result<(), String> {
 }
 
 fn current_local_datetime() -> Result<DateTime<FixedOffset>, String> {
-    let raw = host_bridge::get_now()?;
+    let raw = host::time::now_rfc3339()?;
     DateTime::parse_from_rfc3339(&raw)
         .map_err(|e| format!("failed to parse host_get_now response: {e}"))
 }
@@ -188,7 +153,7 @@ fn list_templates_impl(state: &TemplatingState) -> Result<Vec<TemplateInfo>, Str
 
     // Workspace templates from _templates/ directory
     let dir = templates_dir(state);
-    if let Ok(files) = host_bridge::list_files(&dir) {
+    if let Ok(files) = host::fs::list_files(&dir) {
         for file_path in files {
             if file_path.ends_with(".md") {
                 if let Some(name) = Path::new(&file_path).file_stem().and_then(|s| s.to_str()) {
@@ -209,8 +174,8 @@ fn get_template_impl(state: &TemplatingState, name: &str) -> Result<String, Stri
     let dir = templates_dir(state);
     let template_path = format!("{}/{}.md", dir, name);
 
-    if let Ok(true) = host_bridge::file_exists(&template_path) {
-        return host_bridge::read_file(&template_path);
+    if let Ok(true) = host::fs::file_exists(&template_path) {
+        return host::fs::read_file(&template_path);
     }
 
     // Return built-in template
@@ -223,13 +188,13 @@ fn get_template_impl(state: &TemplatingState, name: &str) -> Result<String, Stri
 fn save_template_impl(state: &TemplatingState, name: &str, content: &str) -> Result<(), String> {
     let dir = templates_dir(state);
     let template_path = format!("{}/{}.md", dir, name);
-    host_bridge::write_file(&template_path, content)
+    host::fs::write_file(&template_path, content)
 }
 
 fn delete_template_impl(state: &TemplatingState, name: &str) -> Result<(), String> {
     let dir = templates_dir(state);
     let template_path = format!("{}/{}.md", dir, name);
-    host_bridge::delete_file(&template_path)
+    host::fs::delete_file(&template_path)
 }
 
 // ============================================================================
@@ -271,6 +236,28 @@ fn dispatch_command(command: &str, params: JsonValue) -> Result<JsonValue, Strin
                 .ok_or("DeleteTemplate requires 'name' param")?;
             delete_template_impl(&state, name)?;
             Ok(JsonValue::Null)
+        }
+        "GetTemplatePath" => {
+            let name = params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or("GetTemplatePath requires 'name' param")?;
+            let dir = templates_dir(&state);
+            let template_path = format!("{}/{}.md", dir, name);
+            if host::fs::file_exists(&template_path).unwrap_or(false) {
+                Ok(serde_json::json!({ "path": template_path, "source": "workspace" }))
+            } else if name == "note" {
+                Ok(serde_json::json!({ "source": "builtin" }))
+            } else {
+                Err(format!("Template not found: {name}"))
+            }
+        }
+        "GetTemplateVariables" => {
+            Ok(serde_json::json!(creation::TEMPLATE_VARIABLES))
+        }
+        "GetTemplatePaths" => {
+            let dir = templates_dir(&state);
+            Ok(serde_json::json!({ "workspace_templates_dir": dir }))
         }
         "RenderBody" => {
             let body = params
@@ -331,6 +318,7 @@ fn dispatch_command(command: &str, params: JsonValue) -> Result<JsonValue, Strin
                 .unwrap_or("note");
             let title = params.get("title").and_then(|v| v.as_str());
             let filename = params.get("filename").and_then(|v| v.as_str());
+            let part_of = params.get("part_of").and_then(|v| v.as_str());
 
             let content = get_template_impl(&state, template_name)?;
             let template = Template::new(template_name, content);
@@ -341,6 +329,18 @@ fn dispatch_command(command: &str, params: JsonValue) -> Result<JsonValue, Strin
             }
             if let Some(f) = filename {
                 ctx = ctx.with_filename(f);
+            }
+            if let Some(p) = part_of {
+                ctx = ctx.with_part_of(p);
+            }
+
+            // Pass through any custom variables
+            if let Some(custom) = params.get("custom").and_then(|v| v.as_object()) {
+                for (k, v) in custom {
+                    if let Some(val) = v.as_str() {
+                        ctx = ctx.with_custom(k.as_str(), val);
+                    }
+                }
             }
 
             let now = current_local_datetime()?;
@@ -400,6 +400,9 @@ fn all_commands() -> Vec<String> {
         "RenderBody".into(),
         "HasTemplates".into(),
         "RenderCreationTemplate".into(),
+        "GetTemplatePath".into(),
+        "GetTemplateVariables".into(),
+        "GetTemplatePaths".into(),
         "get_component_html".into(),
     ]
 }
@@ -411,28 +414,29 @@ fn all_commands() -> Vec<String> {
 #[plugin_fn]
 pub fn manifest(_input: String) -> FnResult<String> {
     let manifest = GuestManifest {
+        protocol_version: CURRENT_PROTOCOL_VERSION,
         id: "diaryx.templating".into(),
         name: "Templating".into(),
         version: env!("CARGO_PKG_VERSION").into(),
         description: "Creation-time templates and render-time body templating with Handlebars"
             .into(),
         capabilities: vec!["workspace_events".into(), "custom_commands".into()],
-        requested_permissions: Some(serde_json::json!({
-            "defaults": {
+        requested_permissions: Some(GuestRequestedPermissions {
+            defaults: serde_json::json!({
                 "read_files": { "include": ["all"], "exclude": [] },
                 "edit_files": { "include": ["all"], "exclude": [] },
                 "create_files": { "include": ["all"], "exclude": [] },
                 "delete_files": { "include": ["all"], "exclude": [] },
                 "plugin_storage": { "include": ["all"], "exclude": [] }
-            },
-            "reasons": {
-                "read_files": "Read workspace templates from the _templates directory.",
-                "edit_files": "Update existing workspace templates when saving changes.",
-                "create_files": "Create new workspace templates in the _templates directory.",
-                "delete_files": "Remove workspace templates that are no longer needed.",
-                "plugin_storage": "Persist templating plugin configuration for the current workspace."
-            }
-        })),
+            }),
+            reasons: HashMap::from([
+                ("read_files".into(), "Read workspace templates from the _templates directory.".into()),
+                ("edit_files".into(), "Update existing workspace templates when saving changes.".into()),
+                ("create_files".into(), "Create new workspace templates in the _templates directory.".into()),
+                ("delete_files".into(), "Remove workspace templates that are no longer needed.".into()),
+                ("plugin_storage".into(), "Persist templating plugin configuration for the current workspace.".into()),
+            ]),
+        }),
         ui: vec![
             serde_json::json!({
                 "slot": "SettingsTab",
@@ -487,13 +491,13 @@ pub fn manifest(_input: String) -> FnResult<String> {
 pub fn init(input: String) -> FnResult<String> {
     let params: InitParams = serde_json::from_str(&input).unwrap_or_default();
     update_workspace_root(params.workspace_root).map_err(extism_pdk::Error::msg)?;
-    host_bridge::log_message("info", "Templating plugin initialized");
+    host::log::log("info", "Templating plugin initialized");
     Ok(String::new())
 }
 
 #[plugin_fn]
 pub fn shutdown(_input: String) -> FnResult<String> {
-    host_bridge::log_message("info", "Templating plugin shutdown");
+    host::log::log("info", "Templating plugin shutdown");
     Ok(String::new())
 }
 
@@ -501,16 +505,8 @@ pub fn shutdown(_input: String) -> FnResult<String> {
 pub fn handle_command(input: String) -> FnResult<String> {
     let req: CommandRequest = serde_json::from_str(&input)?;
     let response = match dispatch_command(&req.command, req.params) {
-        Ok(data) => CommandResponse {
-            success: true,
-            data: Some(data),
-            error: None,
-        },
-        Err(error) => CommandResponse {
-            success: false,
-            data: None,
-            error: Some(error),
-        },
+        Ok(data) => CommandResponse::ok(data),
+        Err(error) => CommandResponse::err(error),
     };
     Ok(serde_json::to_string(&response)?)
 }
