@@ -2,7 +2,7 @@
 title: "Templating"
 description: "Creation-time templates and render-time body templating with Handlebars"
 id: "diaryx.templating"
-version: "0.1.2"
+version: "0.1.3"
 author: "Diaryx Team"
 license: "PolyForm Shield 1.0.0"
 repository: "https://github.com/diaryx-org/plugin-templating"
